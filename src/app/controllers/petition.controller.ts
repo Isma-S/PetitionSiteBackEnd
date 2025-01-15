@@ -1,59 +1,89 @@
 import {Request, Response} from "express";
 import Logger from '../../config/logger';
-import * as schemas from '../resources/schemas.json';
-import * as Petition from '../models/petition.model'
-import * as Image from '../models/images.model';
-import {validate} from "../services/validator";
-import {ResultSetHeader} from "mysql2";
-import * as Supporter from "../models/supporter.model";
+import {
+    deletePetitionById,
+    getAll,
+    getAllCategories,
+    getPetitionById, getSupportTierById,
+    insertPetition, insertSupportTiers,
+    updatePetition
+} from "../models/petition.server.model";
+import {it} from "node:test";
+import {validate} from "../resources/validate";
+import * as schemas from "../resources/schemas.json";
+import {isNumberObject} from "node:util/types";
+import {getUserwithToken, insert} from "../models/user.server.model";
+import * as users from "../models/user.server.model";
+import {globalToken} from "./user.controller";
+import {error} from "winston";
 
 const getAllPetitions = async (req: Request, res: Response): Promise<void> => {
-    try {
+    try{
         const validation = await validate(schemas.petition_search, req.query);
+        Logger.info(`Thisisownerid:${validation}`)
         if (validation !== true) {
-            res.statusMessage = `Bad Request: ${validation.toString()}`;
+            res.statusMessage = `Bad Request:  ${validation.toString()}`;
             res.status(400).send();
+            return ;
+        }
+        const petitions = [];
+        const startIndex = parseInt(req.query.startIndex as string,10);
+        const count = parseInt(req.query.count as string,10);
+        const searchQuery = req.query.q as string
+        const supportingCost = parseInt(req.query.supportingCost as string,10)
+        const supporterId = parseInt(req.query.supporterId as string, 10)
+        const ownerId = req.query.ownerId as string
+        const sortBy = req.query.sortBy as string
+        // Should be handled in schemajson??
+        Logger.info(`Thisis the supid${supporterId}`)
+        // Check if supporterId exists and is not empty
+        // if (isNaN(supporterId)) {
+        //     res.status(400).send("Not a number");
+        //     return;
+        // }
+
+        let categoryIds: number[] = [];
+        if (req.query.categoryIds) {
+            if (Array.isArray(req.query.categoryIds))
+                categoryIds = (req.query.categoryIds as string[]).map(id => parseInt(id, 10));
+            else
+                categoryIds = [parseInt(req.query.categoryIds as string,10)]
+        }
+        const dbresult = await getAll(searchQuery, supportingCost, supporterId, categoryIds, ownerId, sortBy);
+        const dbData = JSON.stringify(dbresult)
+        for (const item of dbresult) {
+            // Logger.info(item);
+            // const supportTierId = await getSupportTierById(item.supporterId);
+            petitions.push({
+                petitionId: item.petitionId,
+                title: item.title,
+                categoryId:item.category_id,
+                ownerId:item.owner_id,
+                ownerFirstName: item.first_name,
+                ownerLastName:item.last_name,
+                creationDate:item.creation_date,
+                supportingCost:item.supportingCost,
+                supporterId:item.supporterId,
+                // supporteruserid:item.supporteruserid,
+                // supportTierId,
+            })
+        }
+
+        const responseData = {
+            count:dbresult.length,
+            petitions,
+        }
+        if (startIndex >= 0) {
+            Logger.info(`this is the count:${startIndex}`)
+            const slicedPetitions = responseData.petitions.slice(startIndex, startIndex +  count);
+            Logger.info(`this is the petitions:${slicedPetitions}`)
+            responseData.petitions = slicedPetitions;
+            res.status(200).send(responseData);
             return;
         }
-
-        if (req.query.hasOwnProperty("ownerId"))
-            req.query.ownerId = parseInt(req.query.ownerId as string, 10) as any;
-        if (req.query.hasOwnProperty("supporterId"))
-            req.query.supporterId = parseInt(req.query.supporterId as string, 10) as any;
-        if (req.query.hasOwnProperty("supportingCost"))
-            req.query.supportingCost = parseInt(req.query.supportingCost as string, 10) as any;
-        if (req.query.hasOwnProperty("startIndex"))
-            req.query.startIndex = parseInt(req.query.startIndex as string, 10) as any;
-        if (req.query.hasOwnProperty("count"))
-            req.query.count = parseInt(req.query.count as string, 10) as any;
-        if (req.query.hasOwnProperty("categoryIds")) {
-            if (!Array.isArray(req.query.categoryIds))
-                req.query.categoryIds = [parseInt(req.query.categoryIds as string, 10)] as any;
-            else
-                req.query.categoryIds = (req.query.categoryIds as string[]).map((x: string) => parseInt(x, 10)) as any;
-            const categories: category[] = await Petition.getCategories();
-            if (!(req.query.categoryIds as any as number[]).every(c => categories.map(x => x.categoryId).includes(c))) {
-                res.statusMessage = `Bad Request: No category with id`;
-                res.status(400).send();
-                return;
-            }
-        }
-
-        let search: petitionSearchQuery = {
-            q: '',
-            ownerId: -1,
-            supporterId: -1,
-            supportingCost: -1,
-            categoryIds: [],
-            sortBy: 'CREATED_ASC',
-            startIndex: 0,
-            count: -1
-        }
-        search = {...search, ...req.query} as petitionSearchQuery;
-
-        const petitions: petitionReturn = await Petition.viewAll(search);
-        res.status(200).send(petitions);
-        return;
+        // Logger.info(`type ${ responseData.count}`)
+        // Logger.info(`type ${ typeof responseData}`)
+        res.status(200).send(responseData)
     } catch (err) {
         Logger.error(err);
         res.statusMessage = "Internal Server Error";
@@ -65,209 +95,195 @@ const getAllPetitions = async (req: Request, res: Response): Promise<void> => {
 
 const getPetition = async (req: Request, res: Response): Promise<void> => {
     try {
-        const petitionId: number = parseInt(req.params.id, 10);
-        if (isNaN(petitionId)){
-            res.statusMessage = "Id must be an integer"
-            res.status(400).send();
+        const petitionId = parseInt(req.params.id,10); // Assuming the petitionId is provided as a route parameter
+        const petition = await getPetitionById(petitionId); // Fetch the petition by its ID
+        if (petition === -1) { // If petition not found
+            res.statusMessage = "Petition not found";
+            res.status(404).send();
             return;
         }
-        const petition: petitionFull = await Petition.getOne(petitionId);
-        if(petition != null) {
-            res.status(200).send(petition);
-            return ;
-        } else {
-            res.status(404).send();
-            return
-        }
+        res.status(200).json(petition); // Respond with the retrieved petition
     } catch (err) {
         Logger.error(err);
-        res.statusMessage = "Internal Server Error";
-        res.status(500).send();
-    }
-}
-
-const addPetition = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const validation = await validate(schemas.petition_post, req.body);
-        if(validation !== true) {
-            res.statusMessage = `Bad Request: ${validation.toString()}`;
-            res.status(400).send();
-            return;
-        }
-        const d: Date = new Date()
-        const creationDate: string = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()} ${d.getHours()}:${d.getMinutes()}:${d.getSeconds()}`
-        const categories: category[] = await Petition.getCategories();
-        if (!categories.find(c => c.categoryId === req.body.categoryId)) {
-            res.statusMessage = "No category with id";
-            res.status(400).send();
-            return;
-        }
-
-        const seenValues: Set<string> = new Set();
-        const hasDuplicateSupportTierTitle = req.body.supportTiers.some((st: { title: string; }) => {
-            if(seenValues.has(st.title)) {
-                return true;
-            }
-            seenValues.add(st.title);
-            return false;
-        })
-
-        if (hasDuplicateSupportTierTitle) {
-           res.statusMessage = "supportTiers must have unique titles";
-           res.status(400).send();
-           return;
-        }
-
-        const result: ResultSetHeader = await Petition.addOne(req.authId, req.body.title, req.body.description, creationDate, req.body.categoryId, req.body.supportTiers)
-        if (result) {
-            res.status(201).send({"petitionId": result.insertId});
-            return;
-        } else {
-            // todo: this feels like a proper edge case to catch
-            res.statusMessage = "Petition could not be saved";
-            res.status(500).send();
-            return;
-        }
-    } catch (err) {
-        Logger.error(err);
-        if (err.errno === 1062) { // 1062 = Duplicate entry MySQL error number
-            res.statusMessage = "Forbidden: Duplicate petition";
-            res.status(403).send();
-            return;
-        } else {
-            res.statusMessage = "Internal Server Error";
-            res.status(500).send();
-            return;
-        }
-    }
-}
-
-const editPetition = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const validation = await validate(schemas.petition_patch, req.body);
-        if(validation !== true) {
-            res.statusMessage = `Bad Request: ${validation.toString()}`;
-            res.status(400).send();
-            return;
-        }
-
-        const petitionId: number = parseInt(req.params.id, 10);
-        if (isNaN(petitionId)) {
-            res.statusMessage = "id must be an integer";
-            res.status(400).send();
-            return;
-        }
-        const petition: petitionFull = await Petition.getOne(petitionId);
-        if (petition == null) {
-            res.status(404).send();
-            return;
-        }
-        if (petition.ownerId !== req.authId) {
-            res.statusMessage = "Cannot edit another user's petition";
-            res.status(403).send();
-            return;
-        }
-        let title: string = petition.title;
-        if (req.body.hasOwnProperty("title")) {
-            title = req.body.title;
-        }
-        let description: string = petition.description;
-        if (req.body.hasOwnProperty("description")) {
-            description = req.body.description;
-        }
-
-        let categoryId: number = petition.categoryId;
-        if (req.body.hasOwnProperty("categoryId")){
-            const categories = await Petition.getCategories();
-            if (!categories.find(c=> c.categoryId === req.body.categoryId)) {
-                res.statusMessage = "No category with id";
-                res.status(400).send();
-                return;
-            } else {
-                categoryId = req.body.categoryId;
-            }
-        }
-
-        const result: boolean = await Petition.editOne(petitionId, title, description, categoryId);
-        if (result) {
-            res.status(200).send();
-            return;
-        } else {
-            // todo: what could cause this case?
-            Logger.warn("Petition could not be updated");
-            res.statusMessage = "Petition could not be updated";
-            res.status(500).send();
-        }
-    } catch (err) {
-        Logger.error(err)
-        if (err.errno === 1062) { // 1062 = Duplicate entry MySQL error number
-            res.statusMessage = "Forbidden: Duplicate petition";
-            res.status(403).send();
-            return;
-        } else {
-            res.statusMessage = "Internal Server Error";
-            res.status(500).send();
-            return;
-        }
-    }
-}
-
-const deletePetition = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const petitionId: number = parseInt(req.params.id, 10);
-        if (isNaN(petitionId)) {
-            res.statusMessage = "id must be an integer";
-            res.status(400).send();
-            return;
-        }
-        const petition: petitionFull = await Petition.getOne(petitionId);
-        if (petition == null) {
-            res.status(404).send();
-            return;
-        }
-        if (petition.ownerId !== req.authId) {
-            res.statusMessage = "Cannot edit another user's petition";
-            res.status(403).send();
-            return;
-        }
-        const supporters: supporter[] = await Supporter.getSupporters(petitionId);
-        if (supporters.length !== 0) {
-            res.statusMessage = "Can not delete a petition if one or more users have supported it";
-            res.status(403).send();
-            return;
-        }
-        const filename: string = await Petition.getImageFilename(petitionId);
-        const result: boolean = await Petition.deleteOne(petitionId);
-        if(result) {
-            if(filename!==null && filename!=="") {
-                await Image.removeImage(filename)
-            }
-            res.status(200).send();
-            return;
-        } else {
-            // todo: what could cause this case?
-            Logger.error("Could not delete petition")
-            res.statusMessage = "Could not delete petition";
-            res.status(500).send();
-            return;
-        }
-    } catch (err) {
-        Logger.error(err)
         res.statusMessage = "Internal Server Error";
         res.status(500).send();
         return;
     }
 }
 
-const getCategories = async(req: Request, res: Response): Promise<void> => {
+const addPetition = async (req: Request, res: Response): Promise<void> => {
+    try{
+        const { title, description, categoryId, supportTiers } = req.body;
+
+        // Check if the title is empty
+        Logger.info(`thisistitlt${title}`)
+        const auth = req.header("X-Authorization");
+        Logger.info(`thisisauth${auth}`)
+        // this had auth with db??
+        if (auth === undefined) {
+            res.status(401).send("Not autharized");
+            return;
+        }
+        if (!title) {
+            res.status(400).send("Title cannot be empty");
+            return;
+        }
+
+        if (!supportTiers) {
+            res.status(400).send("supportTiers cannot be empty, or too many or cost Nan");
+            return;
+        }
+        if (supportTiers.length > 3 ) {
+            res.status(400).send("supportTiers cannot be empty, or too many or cost Nan");
+            return;
+        }
+        for (const items of supportTiers) {
+            if (typeof (items.cost) !== 'number'){
+                res.status(400).send("cost must be provided");
+                return
+            }
+        }
+        Logger.info(`useridfor petition:${auth}`)
+        const dbtokenresult = await getUserwithToken(auth)
+        const userId = dbtokenresult[0].id
+        const dbresult = await insertPetition({ userId,title, description, categoryId,supportTiers });
+        Logger.info(`dbresult petition:${dbresult}`)
+        const petitionId = dbresult[0].insertId;
+        const supportId = dbresult[1].insertId;
+        Logger.info(`This is the response${JSON.stringify(dbresult[0])}`)
+        Logger.info(supportId)
+        res.status(201).send({petitionId})
+        return;
+    } catch (err) {
+        Logger.error(err);
+        res.statusMessage = "Internal Server Error";
+        res.status(500).send();
+        return;
+    }
+}
+
+const editPetition = async (req: Request, res: Response): Promise<void> => {
+    try{
+        const validation = await validate(schemas.petition_patch,req.body);
+        if (validation !== true) {
+            res.statusMessage = `Bad Request: ${validation.toString()}`;
+            res.status(400).send();
+            return ;
+        }
+        const authHeader = req.header('X-Authorization');
+        if (authHeader === undefined) {
+            res.status(401).send("Unauthorized");
+            return ;
+        }
+        Logger.info(`global token ${globalToken}, currentToken:${authHeader}`);
+        // if (authHeader !== globalToken) {
+        //     res.status(404).send("User no authenticated,mismatch");
+        //     return ;
+        // }
+        Logger.info(`reached here ${globalToken}`);
+        const petitionId = parseInt(req.params.id,10);
+        if (isNaN(petitionId)) {
+            res.status(400).send("Invalid ID parameter");
+            return;
+        }
+        const petition = await getPetitionById(petitionId);
+        Logger.info(`thisiispettiton: ${JSON.stringify(petition)}`)
+        const userDb = petition.owner_id;
+        Logger.info(userDb)
+        const userTokenDb = await getUserwithToken(authHeader);
+        Logger.info(JSON.stringify(userTokenDb))
+        const userTokenDbId = userTokenDb[0].id
+        Logger.info(`this is user current :${typeof userTokenDbId} , this userDb${typeof userDb}`);
+
+        Logger.info(`this is user current :${userTokenDbId} , this userDb${userDb}`);
+        if (userTokenDbId !== userDb) {
+            Logger.info("got here")
+            res.status(404).send("User not authenticated,mismatch");
+            return;
+        }
+        // need to be dynamic??
+        // const title = req.body.title;
+        Logger.info(`thisiisdescription ${petition.description}`)
+        const title = req.body.title || petition.title; // Keep the existing title if not provided
+        const description = req.body.description || petition.description; // Keep the existing description if not provided
+        const categoryId = req.body.categoryId || petition.categoryId;
+
+        const dbresult = await updatePetition(petitionId, title, description,categoryId);
+
+        Logger.info(dbresult)
+        if (dbresult[0].affectedRows > 0 ) {
+            res.status(200).send("title updated")
+        } else {
+            res.status(400).send("gone wrong")
+        }
+    } catch (err) {
+        Logger.error(err);
+        res.statusMessage = "Internal Server Error";
+        res.status(500).send();
+        return;
+    }
+}
+
+const deletePetition = async (req: Request, res: Response): Promise<void> => {
     try {
-        const categories: category[] = await Petition.getCategories();
-        res.status(200).send(categories);
+        const authHeader = req.header('X-Authorization');
+        if (!authHeader) {
+            res.status(401).send("Unauthorized");
+            return;
+        }
+
+        const petitionId = parseInt(req.params.id, 10);
+        if (isNaN(petitionId)) {
+            res.status(400).send("Invalid ID parameter");
+            return;
+        }
+
+        // Retrieve petition details
+        const petition = await getPetitionById(petitionId);
+        if (!petition) {
+            res.status(404).send("Petition not found");
+            return;
+        }
+
+        // Check if the user is the owner of the petition
+        // const userTokenDb = await getUserwithToken(authHeader);
+        // const userTokenDbId = userTokenDb[0].id;
+        // if (userTokenDbId !== petition.owner_id) {
+        //     res.status(403).send("Forbidden: You are not the owner of this petition");
+        //     return;
+        // }
+
+        // Delete the petition from the database
+        const deleteResult = await deletePetitionById(petitionId);
+        if (deleteResult.message) {
+            res.status(403).send("Error in sql")
+            return
+        }
+        Logger.info(`this is delete result${JSON.stringify(deleteResult)}`)
+        if (deleteResult[0].affectedRows > 0) {
+            res.status(200).send("Petition deleted successfully");
+            // Logger.info('WHHHHHH')
+            return ;
+        } else {
+            // Logger.info(`${deleteResult.affectedRows}`)
+            res.status(403).send(`Failed to delete petition${deleteResult}`);
+        }
+    } catch (err) {
+        Logger.error(err);
+        res.status(500).send("Internal Server Error");
+    }
+}
+const getCategories = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const categories = await getAllCategories(); // Assuming you have a function to fetch categories
+        res.status(200).json(categories); // Send categories as a JSON response
     } catch (err) {
         Logger.error(err);
         res.statusMessage = "Internal Server Error";
         res.status(500).send();
     }
-}
+};
+
+
 
 export {getAllPetitions, getPetition, addPetition, editPetition, deletePetition, getCategories};

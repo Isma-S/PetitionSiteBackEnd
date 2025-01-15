@@ -24,7 +24,6 @@ var __importStar = (this && this.__importStar) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const base_routes_1 = require("./base.routes");
-const auth_middleware_1 = require("../middleware/auth.middleware");
 const user = __importStar(require("../controllers/user.controller"));
 const userImages = __importStar(require("../controllers/user.image.controller"));
 module.exports = (app) => {
@@ -33,13 +32,13 @@ module.exports = (app) => {
     app.route(base_routes_1.rootUrl + '/users/login')
         .post(user.login);
     app.route(base_routes_1.rootUrl + '/users/logout')
-        .post(auth_middleware_1.authenticate, user.logout);
+        .post(user.logout);
     app.route(base_routes_1.rootUrl + '/users/:id')
-        .get(auth_middleware_1.relaxedAuthenticate, user.view)
-        .patch(auth_middleware_1.authenticate, user.update);
+        .get(user.view)
+        .patch(user.update);
     app.route(base_routes_1.rootUrl + '/users/:id/image')
         .get(userImages.getImage)
-        .put(auth_middleware_1.authenticate, userImages.setImage)
-        .delete(auth_middleware_1.authenticate, userImages.deleteImage);
+        .put(userImages.setImage)
+        .delete(userImages.deleteImage);
 };
 //# sourceMappingURL=user.routes.js.map

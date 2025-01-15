@@ -1,87 +1,95 @@
 import {Request, Response} from "express";
 import Logger from "../../config/logger";
-import * as Petitions from "../models/petition.model";
-import {addImage, readImage, removeImage} from "../models/images.model";
-import {getImageExtension} from "../models/imageTools";
-
+import * as users from "../models/user.image.server.model";
+import path from "path";
+import mime from "mime";
+import {getPetitionById, insertPetitionImage} from "../models/petition.server.model";
+import fs from "mz/fs";
+const filepath = "../../../storage/images"
 const getImage = async (req: Request, res: Response): Promise<void> => {
     try {
-        const petitionId: number = parseInt(req.params.id, 10);
-        if (isNaN(petitionId)) {
-            res.statusMessage = "Id must be an integer"
-            res.status(400).send();
+        const id = parseInt(req.params.id, 10);
+        const dbresult = await getPetitionById(id);
+        if (dbresult.length === 0) {
+            res.status(404).send(`Petition with id:${id} doesn't exist`);
             return;
         }
-        const filename: string = await Petitions.getImageFilename(petitionId)
-        if(filename == null) {
-            res.status(404).send();
+
+        const imageName = dbresult.image_filename;
+        if (!imageName) {
+            res.status(404).send("No image found for this petition");
             return;
         }
-        const [image, mimetype]  = await readImage(filename)
-        res.status(200).contentType(mimetype).send(image)
+
+        const imageDirectory = path.join(__dirname, filepath);
+        const imagePath = path.join(imageDirectory, imageName);
+        Logger.info(`petition:${imagePath}`);
+
+        const contentType = mime.lookup(imagePath); // Getting MIME type from file path
+        if (!contentType) {
+            res.status(500).send("Internal Server Error: Unable to determine image content type");
+            return;
+        }
+
+        res.setHeader("Content-Type", contentType);
+        res.sendFile(imagePath);
     } catch (err) {
         Logger.error(err);
-        res.statusMessage = "Internal Server Error";
-        res.status(500).send();
+        res.status(500).send("Internal Server Error");
     }
-}
+};
+
 
 const setImage = async (req: Request, res: Response): Promise<void> => {
-    try{
-        let isNew:boolean = true;
-        const petitionId: number = parseInt(req.params.id, 10);
-        if (isNaN(petitionId)) {
-            res.statusMessage = "Id must be an integer"
-            res.status(400).send();
-            return;
-        }
+    try {
         const image = req.body;
-        const petition: petitionFull = await Petitions.getOne(petitionId);
-        if (petition == null){
-            res.statusMessage = "No such petition"
-            res.status(404).send();
+        // Check if request contains file
+        if (!image) {
+            res.status(400).send("No file uploaded");
             return;
         }
-        if(req.authId !== petition.ownerId) {
-            res.statusMessage = "Cannot modify another user's petition";
-            res.status(403).send();
-            return;
-        }
-        const mimeType: string = req.header('Content-Type');
-        const fileExt: string = getImageExtension(mimeType);
-        if (fileExt == null) {
-            res.statusMessage = 'Bad Request: photo must be image/jpeg, image/png, image/gif type, but it was: ' + mimeType;
-            res.status(400).send();
-            return;
+        const id = parseInt(req.params.id,10);
+        const imageHeader = req.header("Content-Type");
+        const imageType = imageHeader.split('/')[1];
+        // Assuming you have a directory to save images
+        const uploadDirectory = path.join(__dirname, filepath);
+
+        // Check if the directory exists, if not, create it
+        if (!fs.existsSync(uploadDirectory)) {
+            fs.mkdirSync(uploadDirectory, { recursive: true });
         }
 
-        if (image.length === undefined) {
-            res.statusMessage = 'Bad request: empty image';
-            res.status(400).send();
-            return;
-        }
-
-        const filename: string = await Petitions.getImageFilename(petitionId);
-        if(filename != null && filename !== "") {
-            await removeImage(filename);
-            isNew = false;
-        }
-        const newFilename: string = await addImage(image, fileExt);
-        await Petitions.setImageFilename(petitionId, newFilename);
-        if(isNew) {
-            res.status(201).send()
-            return;
-        } else {
-            res.status(200).send()
-            return;
+        // Assuming you want to save the file with the original name
+        const imageName = `petition_${id}.${imageType}`;
+        const filePath = path.join(uploadDirectory, imageName);
+        Logger.info("writing image to dir")
+        // Move the uploaded file to the specified directory
+        try {
+            // Logger.info(`Image moved to:${imagePath}`)
+            await fs.writeFile(filePath, image);
+            Logger.info(`Image moved to:${filePath}`)
+            const dbresult = await insertPetitionImage(imageName,id);
+            Logger.info(`Image moved to:${typeof image}`)
+            if (dbresult && dbresult.affectedRows > 0) {
+                if (imageType === "jpeg") {
+                    res.status(201).send("Image file name set successfully");
+                } else if (imageType === "gif") {
+                    res.status(200).send("Image file name set successfully");
+                } else {
+                    res.status(400).send(`Unsupported image type: ${imageType}`);
+                }
+            } else {
+                res.status(403).send(`User id:${id} doesn't exist`);
+            }
+            Logger.info("written file successfully");
+        } catch (err) {
+            Logger.error("Error writing image to folder",err);
         }
     } catch (err) {
-        Logger.error(err)
-        res.statusMessage = "Internal Server Error";
-        res.status(500).send();
-        return;
+        Logger.error(err);
+        res.status(500).send("Internal Server Error");
     }
-}
+};
 
 
 export {getImage, setImage};

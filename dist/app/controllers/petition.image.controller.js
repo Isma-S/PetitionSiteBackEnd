@@ -1,27 +1,4 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -37,86 +14,92 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.setImage = exports.getImage = void 0;
 const logger_1 = __importDefault(require("../../config/logger"));
-const Petitions = __importStar(require("../models/petition.model"));
-const images_model_1 = require("../models/images.model");
-const imageTools_1 = require("../models/imageTools");
+const path_1 = __importDefault(require("path"));
+const mime_1 = __importDefault(require("mime"));
+const petition_server_model_1 = require("../models/petition.server.model");
+const fs_1 = __importDefault(require("mz/fs"));
+const filepath = "../../../storage/images";
 const getImage = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const petitionId = parseInt(req.params.id, 10);
-        if (isNaN(petitionId)) {
-            res.statusMessage = "Id must be an integer";
-            res.status(400).send();
+        const id = parseInt(req.params.id, 10);
+        const dbresult = yield (0, petition_server_model_1.getPetitionById)(id);
+        if (dbresult.length === 0) {
+            res.status(404).send(`Petition with id:${id} doesn't exist`);
             return;
         }
-        const filename = yield Petitions.getImageFilename(petitionId);
-        if (filename == null) {
-            res.status(404).send();
+        const imageName = dbresult.image_filename;
+        if (!imageName) {
+            res.status(404).send("No image found for this petition");
             return;
         }
-        const [image, mimetype] = yield (0, images_model_1.readImage)(filename);
-        res.status(200).contentType(mimetype).send(image);
+        const imageDirectory = path_1.default.join(__dirname, filepath);
+        const imagePath = path_1.default.join(imageDirectory, imageName);
+        logger_1.default.info(`petition:${imagePath}`);
+        const contentType = mime_1.default.lookup(imagePath); // Getting MIME type from file path
+        if (!contentType) {
+            res.status(500).send("Internal Server Error: Unable to determine image content type");
+            return;
+        }
+        res.setHeader("Content-Type", contentType);
+        res.sendFile(imagePath);
     }
     catch (err) {
         logger_1.default.error(err);
-        res.statusMessage = "Internal Server Error";
-        res.status(500).send();
+        res.status(500).send("Internal Server Error");
     }
 });
 exports.getImage = getImage;
 const setImage = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        let isNew = true;
-        const petitionId = parseInt(req.params.id, 10);
-        if (isNaN(petitionId)) {
-            res.statusMessage = "Id must be an integer";
-            res.status(400).send();
-            return;
-        }
         const image = req.body;
-        const petition = yield Petitions.getOne(petitionId);
-        if (petition == null) {
-            res.statusMessage = "No such petition";
-            res.status(404).send();
+        // Check if request contains file
+        if (!image) {
+            res.status(400).send("No file uploaded");
             return;
         }
-        if (req.authId !== petition.ownerId) {
-            res.statusMessage = "Cannot modify another user's petition";
-            res.status(403).send();
-            return;
+        const id = parseInt(req.params.id, 10);
+        const imageHeader = req.header("Content-Type");
+        const imageType = imageHeader.split('/')[1];
+        // Assuming you have a directory to save images
+        const uploadDirectory = path_1.default.join(__dirname, filepath);
+        // Check if the directory exists, if not, create it
+        if (!fs_1.default.existsSync(uploadDirectory)) {
+            fs_1.default.mkdirSync(uploadDirectory, { recursive: true });
         }
-        const mimeType = req.header('Content-Type');
-        const fileExt = (0, imageTools_1.getImageExtension)(mimeType);
-        if (fileExt == null) {
-            res.statusMessage = 'Bad Request: photo must be image/jpeg, image/png, image/gif type, but it was: ' + mimeType;
-            res.status(400).send();
-            return;
+        // Assuming you want to save the file with the original name
+        const imageName = `petition_${id}.${imageType}`;
+        const filePath = path_1.default.join(uploadDirectory, imageName);
+        logger_1.default.info("writing image to dir");
+        // Move the uploaded file to the specified directory
+        try {
+            // Logger.info(`Image moved to:${imagePath}`)
+            yield fs_1.default.writeFile(filePath, image);
+            logger_1.default.info(`Image moved to:${filePath}`);
+            const dbresult = yield (0, petition_server_model_1.insertPetitionImage)(imageName, id);
+            logger_1.default.info(`Image moved to:${typeof image}`);
+            if (dbresult && dbresult.affectedRows > 0) {
+                if (imageType === "jpeg") {
+                    res.status(201).send("Image file name set successfully");
+                }
+                else if (imageType === "gif") {
+                    res.status(200).send("Image file name set successfully");
+                }
+                else {
+                    res.status(400).send(`Unsupported image type: ${imageType}`);
+                }
+            }
+            else {
+                res.status(403).send(`User id:${id} doesn't exist`);
+            }
+            logger_1.default.info("written file successfully");
         }
-        if (image.length === undefined) {
-            res.statusMessage = 'Bad request: empty image';
-            res.status(400).send();
-            return;
-        }
-        const filename = yield Petitions.getImageFilename(petitionId);
-        if (filename != null && filename !== "") {
-            yield (0, images_model_1.removeImage)(filename);
-            isNew = false;
-        }
-        const newFilename = yield (0, images_model_1.addImage)(image, fileExt);
-        yield Petitions.setImageFilename(petitionId, newFilename);
-        if (isNew) {
-            res.status(201).send();
-            return;
-        }
-        else {
-            res.status(200).send();
-            return;
+        catch (err) {
+            logger_1.default.error("Error writing image to folder", err);
         }
     }
     catch (err) {
         logger_1.default.error(err);
-        res.statusMessage = "Internal Server Error";
-        res.status(500).send();
-        return;
+        res.status(500).send("Internal Server Error");
     }
 });
 exports.setImage = setImage;

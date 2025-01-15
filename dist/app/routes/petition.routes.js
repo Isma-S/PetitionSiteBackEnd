@@ -28,27 +28,26 @@ const petition = __importStar(require("../controllers/petition.controller"));
 const petitionImage = __importStar(require("../controllers/petition.image.controller"));
 const supportTiers = __importStar(require("../controllers/petition.support_tier.controller"));
 const supporter = __importStar(require("../controllers/petition.supporter.controller"));
-const auth_middleware_1 = require("../middleware/auth.middleware");
 module.exports = (app) => {
     app.route(base_routes_1.rootUrl + '/petitions')
         .get(petition.getAllPetitions)
-        .post(auth_middleware_1.authenticate, petition.addPetition);
+        .post(petition.addPetition);
     app.route(base_routes_1.rootUrl + '/petitions/categories')
         .get(petition.getCategories);
     app.route(base_routes_1.rootUrl + '/petitions/:id')
         .get(petition.getPetition)
-        .patch(auth_middleware_1.authenticate, petition.editPetition)
-        .delete(auth_middleware_1.authenticate, petition.deletePetition);
+        .patch(petition.editPetition)
+        .delete(petition.deletePetition);
     app.route(base_routes_1.rootUrl + '/petitions/:id/image')
         .get(petitionImage.getImage)
-        .put(auth_middleware_1.authenticate, petitionImage.setImage);
+        .put(petitionImage.setImage);
     app.route(base_routes_1.rootUrl + '/petitions/:id/supportTiers')
-        .put(auth_middleware_1.authenticate, supportTiers.addSupportTier);
+        .put(supportTiers.addSupportTier);
     app.route(base_routes_1.rootUrl + '/petitions/:id/supportTiers/:tierId')
-        .patch(auth_middleware_1.authenticate, supportTiers.editSupportTier)
-        .delete(auth_middleware_1.authenticate, supportTiers.deleteSupportTier);
+        .patch(supportTiers.editSupportTier)
+        .delete(supportTiers.deleteSupportTier);
     app.route(base_routes_1.rootUrl + '/petitions/:id/supporters')
         .get(supporter.getAllSupportersForPetition)
-        .post(auth_middleware_1.authenticate, supporter.addSupporter);
+        .post(supporter.addSupporter);
 };
 //# sourceMappingURL=petition.routes.js.map

@@ -27,7 +27,7 @@ function main() {
             });
         }
         catch (err) {
-            logger_1.default.error('Unable to connect to MySQL.');
+            logger_1.default.error('Unable to connect to MySQL.', err);
             process.exit(1);
         }
     });

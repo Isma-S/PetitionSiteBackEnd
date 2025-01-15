@@ -37,55 +37,76 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getCategories = exports.deletePetition = exports.editPetition = exports.addPetition = exports.getPetition = exports.getAllPetitions = void 0;
 const logger_1 = __importDefault(require("../../config/logger"));
+const petition_server_model_1 = require("../models/petition.server.model");
+const validate_1 = require("../resources/validate");
 const schemas = __importStar(require("../resources/schemas.json"));
-const Petition = __importStar(require("../models/petition.model"));
-const Image = __importStar(require("../models/images.model"));
-const validator_1 = require("../services/validator");
-const Supporter = __importStar(require("../models/supporter.model"));
+const user_server_model_1 = require("../models/user.server.model");
+const user_controller_1 = require("./user.controller");
 const getAllPetitions = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const validation = yield (0, validator_1.validate)(schemas.petition_search, req.query);
+        const validation = yield (0, validate_1.validate)(schemas.petition_search, req.query);
+        logger_1.default.info(`Thisisownerid:${validation}`);
         if (validation !== true) {
-            res.statusMessage = `Bad Request: ${validation.toString()}`;
+            res.statusMessage = `Bad Request:  ${validation.toString()}`;
             res.status(400).send();
             return;
         }
-        if (req.query.hasOwnProperty("ownerId"))
-            req.query.ownerId = parseInt(req.query.ownerId, 10);
-        if (req.query.hasOwnProperty("supporterId"))
-            req.query.supporterId = parseInt(req.query.supporterId, 10);
-        if (req.query.hasOwnProperty("supportingCost"))
-            req.query.supportingCost = parseInt(req.query.supportingCost, 10);
-        if (req.query.hasOwnProperty("startIndex"))
-            req.query.startIndex = parseInt(req.query.startIndex, 10);
-        if (req.query.hasOwnProperty("count"))
-            req.query.count = parseInt(req.query.count, 10);
-        if (req.query.hasOwnProperty("categoryIds")) {
-            if (!Array.isArray(req.query.categoryIds))
-                req.query.categoryIds = [parseInt(req.query.categoryIds, 10)];
+        const petitions = [];
+        const startIndex = parseInt(req.query.startIndex, 10);
+        const count = parseInt(req.query.count, 10);
+        const searchQuery = req.query.q;
+        const supportingCost = parseInt(req.query.supportingCost, 10);
+        const supporterId = parseInt(req.query.supporterId, 10);
+        const ownerId = req.query.ownerId;
+        const sortBy = req.query.sortBy;
+        // Should be handled in schemajson??
+        logger_1.default.info(`Thisis the supid${supporterId}`);
+        // Check if supporterId exists and is not empty
+        // if (isNaN(supporterId)) {
+        //     res.status(400).send("Not a number");
+        //     return;
+        // }
+        let categoryIds = [];
+        if (req.query.categoryIds) {
+            if (Array.isArray(req.query.categoryIds))
+                categoryIds = req.query.categoryIds.map(id => parseInt(id, 10));
             else
-                req.query.categoryIds = req.query.categoryIds.map((x) => parseInt(x, 10));
-            const categories = yield Petition.getCategories();
-            if (!req.query.categoryIds.every(c => categories.map(x => x.categoryId).includes(c))) {
-                res.statusMessage = `Bad Request: No category with id`;
-                res.status(400).send();
-                return;
-            }
+                categoryIds = [parseInt(req.query.categoryIds, 10)];
         }
-        let search = {
-            q: '',
-            ownerId: -1,
-            supporterId: -1,
-            supportingCost: -1,
-            categoryIds: [],
-            sortBy: 'CREATED_ASC',
-            startIndex: 0,
-            count: -1
+        const dbresult = yield (0, petition_server_model_1.getAll)(searchQuery, supportingCost, supporterId, categoryIds, ownerId, sortBy);
+        const dbData = JSON.stringify(dbresult);
+        for (const item of dbresult) {
+            // Logger.info(item);
+            // const supportTierId = await getSupportTierById(item.supporterId);
+            petitions.push({
+                petitionId: item.petitionId,
+                title: item.title,
+                categoryId: item.category_id,
+                ownerId: item.owner_id,
+                ownerFirstName: item.first_name,
+                ownerLastName: item.last_name,
+                creationDate: item.creation_date,
+                supportingCost: item.supportingCost,
+                supporterId: item.supporterId,
+                // supporteruserid:item.supporteruserid,
+                // supportTierId,
+            });
+        }
+        const responseData = {
+            count: dbresult.length,
+            petitions,
         };
-        search = Object.assign(Object.assign({}, search), req.query);
-        const petitions = yield Petition.viewAll(search);
-        res.status(200).send(petitions);
-        return;
+        if (startIndex >= 0) {
+            logger_1.default.info(`this is the count:${startIndex}`);
+            const slicedPetitions = responseData.petitions.slice(startIndex, startIndex + count);
+            logger_1.default.info(`this is the petitions:${slicedPetitions}`);
+            responseData.petitions = slicedPetitions;
+            res.status(200).send(responseData);
+            return;
+        }
+        // Logger.info(`type ${ responseData.count}`)
+        // Logger.info(`type ${ typeof responseData}`)
+        res.status(200).send(responseData);
     }
     catch (err) {
         logger_1.default.error(err);
@@ -97,195 +118,124 @@ const getAllPetitions = (req, res) => __awaiter(void 0, void 0, void 0, function
 exports.getAllPetitions = getAllPetitions;
 const getPetition = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const petitionId = parseInt(req.params.id, 10);
-        if (isNaN(petitionId)) {
-            res.statusMessage = "Id must be an integer";
-            res.status(400).send();
-            return;
-        }
-        const petition = yield Petition.getOne(petitionId);
-        if (petition != null) {
-            res.status(200).send(petition);
-            return;
-        }
-        else {
+        const petitionId = parseInt(req.params.id, 10); // Assuming the petitionId is provided as a route parameter
+        const petition = yield (0, petition_server_model_1.getPetitionById)(petitionId); // Fetch the petition by its ID
+        if (petition === -1) { // If petition not found
+            res.statusMessage = "Petition not found";
             res.status(404).send();
             return;
         }
+        res.status(200).json(petition); // Respond with the retrieved petition
     }
     catch (err) {
         logger_1.default.error(err);
         res.statusMessage = "Internal Server Error";
         res.status(500).send();
+        return;
     }
 });
 exports.getPetition = getPetition;
 const addPetition = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const validation = yield (0, validator_1.validate)(schemas.petition_post, req.body);
-        if (validation !== true) {
-            res.statusMessage = `Bad Request: ${validation.toString()}`;
-            res.status(400).send();
+        const { title, description, categoryId, supportTiers } = req.body;
+        // Check if the title is empty
+        logger_1.default.info(`thisistitlt${title}`);
+        const auth = req.header("X-Authorization");
+        logger_1.default.info(`thisisauth${auth}`);
+        // this had auth with db??
+        if (auth === undefined) {
+            res.status(401).send("Not autharized");
             return;
         }
-        const d = new Date();
-        const creationDate = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()} ${d.getHours()}:${d.getMinutes()}:${d.getSeconds()}`;
-        const categories = yield Petition.getCategories();
-        if (!categories.find(c => c.categoryId === req.body.categoryId)) {
-            res.statusMessage = "No category with id";
-            res.status(400).send();
+        if (!title) {
+            res.status(400).send("Title cannot be empty");
             return;
         }
-        const seenValues = new Set();
-        const hasDuplicateSupportTierTitle = req.body.supportTiers.some((st) => {
-            if (seenValues.has(st.title)) {
-                return true;
+        if (!supportTiers) {
+            res.status(400).send("supportTiers cannot be empty, or too many or cost Nan");
+            return;
+        }
+        if (supportTiers.length > 3) {
+            res.status(400).send("supportTiers cannot be empty, or too many or cost Nan");
+            return;
+        }
+        for (const items of supportTiers) {
+            if (typeof (items.cost) !== 'number') {
+                res.status(400).send("cost must be provided");
+                return;
             }
-            seenValues.add(st.title);
-            return false;
-        });
-        if (hasDuplicateSupportTierTitle) {
-            res.statusMessage = "supportTiers must have unique titles";
-            res.status(400).send();
-            return;
         }
-        const result = yield Petition.addOne(req.authId, req.body.title, req.body.description, creationDate, req.body.categoryId, req.body.supportTiers);
-        if (result) {
-            res.status(201).send({ "petitionId": result.insertId });
-            return;
-        }
-        else {
-            // todo: this feels like a proper edge case to catch
-            res.statusMessage = "Petition could not be saved";
-            res.status(500).send();
-            return;
-        }
+        logger_1.default.info(`useridfor petition:${auth}`);
+        const dbtokenresult = yield (0, user_server_model_1.getUserwithToken)(auth);
+        const userId = dbtokenresult[0].id;
+        const dbresult = yield (0, petition_server_model_1.insertPetition)({ userId, title, description, categoryId, supportTiers });
+        logger_1.default.info(`dbresult petition:${dbresult}`);
+        const petitionId = dbresult[0].insertId;
+        const supportId = dbresult[1].insertId;
+        logger_1.default.info(`This is the response${JSON.stringify(dbresult[0])}`);
+        logger_1.default.info(supportId);
+        res.status(201).send({ petitionId });
+        return;
     }
     catch (err) {
         logger_1.default.error(err);
-        if (err.errno === 1062) { // 1062 = Duplicate entry MySQL error number
-            res.statusMessage = "Forbidden: Duplicate petition";
-            res.status(403).send();
-            return;
-        }
-        else {
-            res.statusMessage = "Internal Server Error";
-            res.status(500).send();
-            return;
-        }
+        res.statusMessage = "Internal Server Error";
+        res.status(500).send();
+        return;
     }
 });
 exports.addPetition = addPetition;
 const editPetition = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const validation = yield (0, validator_1.validate)(schemas.petition_patch, req.body);
+        const validation = yield (0, validate_1.validate)(schemas.petition_patch, req.body);
         if (validation !== true) {
             res.statusMessage = `Bad Request: ${validation.toString()}`;
             res.status(400).send();
             return;
         }
+        const authHeader = req.header('X-Authorization');
+        if (authHeader === undefined) {
+            res.status(401).send("Unauthorized");
+            return;
+        }
+        logger_1.default.info(`global token ${user_controller_1.globalToken}, currentToken:${authHeader}`);
+        // if (authHeader !== globalToken) {
+        //     res.status(404).send("User no authenticated,mismatch");
+        //     return ;
+        // }
+        logger_1.default.info(`reached here ${user_controller_1.globalToken}`);
         const petitionId = parseInt(req.params.id, 10);
         if (isNaN(petitionId)) {
-            res.statusMessage = "id must be an integer";
-            res.status(400).send();
+            res.status(400).send("Invalid ID parameter");
             return;
         }
-        const petition = yield Petition.getOne(petitionId);
-        if (petition == null) {
-            res.status(404).send();
+        const petition = yield (0, petition_server_model_1.getPetitionById)(petitionId);
+        logger_1.default.info(`thisiispettiton: ${JSON.stringify(petition)}`);
+        const userDb = petition.owner_id;
+        logger_1.default.info(userDb);
+        const userTokenDb = yield (0, user_server_model_1.getUserwithToken)(authHeader);
+        logger_1.default.info(JSON.stringify(userTokenDb));
+        const userTokenDbId = userTokenDb[0].id;
+        logger_1.default.info(`this is user current :${typeof userTokenDbId} , this userDb${typeof userDb}`);
+        logger_1.default.info(`this is user current :${userTokenDbId} , this userDb${userDb}`);
+        if (userTokenDbId !== userDb) {
+            logger_1.default.info("got here");
+            res.status(404).send("User not authenticated,mismatch");
             return;
         }
-        if (petition.ownerId !== req.authId) {
-            res.statusMessage = "Cannot edit another user's petition";
-            res.status(403).send();
-            return;
-        }
-        let title = petition.title;
-        if (req.body.hasOwnProperty("title")) {
-            title = req.body.title;
-        }
-        let description = petition.description;
-        if (req.body.hasOwnProperty("description")) {
-            description = req.body.description;
-        }
-        let categoryId = petition.categoryId;
-        if (req.body.hasOwnProperty("categoryId")) {
-            const categories = yield Petition.getCategories();
-            if (!categories.find(c => c.categoryId === req.body.categoryId)) {
-                res.statusMessage = "No category with id";
-                res.status(400).send();
-                return;
-            }
-            else {
-                categoryId = req.body.categoryId;
-            }
-        }
-        const result = yield Petition.editOne(petitionId, title, description, categoryId);
-        if (result) {
-            res.status(200).send();
-            return;
+        // need to be dynamic??
+        // const title = req.body.title;
+        logger_1.default.info(`thisiisdescription ${petition.description}`);
+        const title = req.body.title || petition.title; // Keep the existing title if not provided
+        const description = req.body.description || petition.description; // Keep the existing description if not provided
+        const categoryId = req.body.categoryId || petition.categoryId;
+        const dbresult = yield (0, petition_server_model_1.updatePetition)(petitionId, title, description, categoryId);
+        logger_1.default.info(dbresult);
+        if (dbresult[0].affectedRows > 0) {
+            res.status(200).send("title updated");
         }
         else {
-            // todo: what could cause this case?
-            logger_1.default.warn("Petition could not be updated");
-            res.statusMessage = "Petition could not be updated";
-            res.status(500).send();
-        }
-    }
-    catch (err) {
-        logger_1.default.error(err);
-        if (err.errno === 1062) { // 1062 = Duplicate entry MySQL error number
-            res.statusMessage = "Forbidden: Duplicate petition";
-            res.status(403).send();
-            return;
-        }
-        else {
-            res.statusMessage = "Internal Server Error";
-            res.status(500).send();
-            return;
-        }
-    }
-});
-exports.editPetition = editPetition;
-const deletePetition = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        const petitionId = parseInt(req.params.id, 10);
-        if (isNaN(petitionId)) {
-            res.statusMessage = "id must be an integer";
-            res.status(400).send();
-            return;
-        }
-        const petition = yield Petition.getOne(petitionId);
-        if (petition == null) {
-            res.status(404).send();
-            return;
-        }
-        if (petition.ownerId !== req.authId) {
-            res.statusMessage = "Cannot edit another user's petition";
-            res.status(403).send();
-            return;
-        }
-        const supporters = yield Supporter.getSupporters(petitionId);
-        if (supporters.length !== 0) {
-            res.statusMessage = "Can not delete a petition if one or more users have supported it";
-            res.status(403).send();
-            return;
-        }
-        const filename = yield Petition.getImageFilename(petitionId);
-        const result = yield Petition.deleteOne(petitionId);
-        if (result) {
-            if (filename !== null && filename !== "") {
-                yield Image.removeImage(filename);
-            }
-            res.status(200).send();
-            return;
-        }
-        else {
-            // todo: what could cause this case?
-            logger_1.default.error("Could not delete petition");
-            res.statusMessage = "Could not delete petition";
-            res.status(500).send();
-            return;
+            res.status(400).send("gone wrong");
         }
     }
     catch (err) {
@@ -295,11 +245,59 @@ const deletePetition = (req, res) => __awaiter(void 0, void 0, void 0, function*
         return;
     }
 });
+exports.editPetition = editPetition;
+const deletePetition = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const authHeader = req.header('X-Authorization');
+        if (!authHeader) {
+            res.status(401).send("Unauthorized");
+            return;
+        }
+        const petitionId = parseInt(req.params.id, 10);
+        if (isNaN(petitionId)) {
+            res.status(400).send("Invalid ID parameter");
+            return;
+        }
+        // Retrieve petition details
+        const petition = yield (0, petition_server_model_1.getPetitionById)(petitionId);
+        if (!petition) {
+            res.status(404).send("Petition not found");
+            return;
+        }
+        // Check if the user is the owner of the petition
+        // const userTokenDb = await getUserwithToken(authHeader);
+        // const userTokenDbId = userTokenDb[0].id;
+        // if (userTokenDbId !== petition.owner_id) {
+        //     res.status(403).send("Forbidden: You are not the owner of this petition");
+        //     return;
+        // }
+        // Delete the petition from the database
+        const deleteResult = yield (0, petition_server_model_1.deletePetitionById)(petitionId);
+        if (deleteResult.message) {
+            res.status(403).send("Error in sql");
+            return;
+        }
+        logger_1.default.info(`this is delete result${JSON.stringify(deleteResult)}`);
+        if (deleteResult[0].affectedRows > 0) {
+            res.status(200).send("Petition deleted successfully");
+            // Logger.info('WHHHHHH')
+            return;
+        }
+        else {
+            // Logger.info(`${deleteResult.affectedRows}`)
+            res.status(403).send(`Failed to delete petition${deleteResult}`);
+        }
+    }
+    catch (err) {
+        logger_1.default.error(err);
+        res.status(500).send("Internal Server Error");
+    }
+});
 exports.deletePetition = deletePetition;
 const getCategories = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const categories = yield Petition.getCategories();
-        res.status(200).send(categories);
+        const categories = yield (0, petition_server_model_1.getAllCategories)(); // Assuming you have a function to fetch categories
+        res.status(200).json(categories); // Send categories as a JSON response
     }
     catch (err) {
         logger_1.default.error(err);

@@ -36,29 +36,26 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.addSupporter = exports.getAllSupportersForPetition = void 0;
-const schemas = __importStar(require("../resources/schemas.json"));
-const Petition = __importStar(require("../models/petition.model"));
-const Supporters = __importStar(require("../models/supporter.model"));
 const logger_1 = __importDefault(require("../../config/logger"));
-const validator_1 = require("../services/validator");
+const petition_server_model_1 = require("../models/petition.server.model");
+const validate_1 = require("../resources/validate");
+const schemas = __importStar(require("../resources/schemas.json"));
+const user_server_model_1 = require("../models/user.server.model");
 const getAllSupportersForPetition = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const petitionId = parseInt(req.params.id, 10);
+        const petitionId = parseInt(req.params.id, 10); // Assuming the petitionId is provided as a route parameter
         if (isNaN(petitionId)) {
-            res.statusMessage = "id must be an integer";
-            res.status(400).send();
+            res.status(400).send("Invalid petition ID parameter");
             return;
         }
-        const petition = yield Petition.getOne(petitionId);
-        if (petition == null) {
-            res.status(404).send();
-            return;
-        }
-        const supporters = yield Supporters.getSupporters(petitionId);
+        // Assuming you have a function to fetch supporters for a petition from the database
+        const supporters = yield (0, petition_server_model_1.getSupportersForPetitionFromDB)(petitionId);
+        const returnData = {};
+        // Respond with the retrieved supporters
         res.status(200).send(supporters);
     }
     catch (err) {
-        logger_1.default.warn(err);
+        logger_1.default.error(`Error fetching supporters for petition: ${err.message}`);
         res.statusMessage = "Internal Server Error";
         res.status(500).send();
         return;
@@ -67,7 +64,7 @@ const getAllSupportersForPetition = (req, res) => __awaiter(void 0, void 0, void
 exports.getAllSupportersForPetition = getAllSupportersForPetition;
 const addSupporter = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const validation = yield (0, validator_1.validate)(schemas.support_post, req.body);
+        const validation = yield (0, validate_1.validate)(schemas.support_post, req.body);
         if (validation !== true) {
             res.statusMessage = `Bad Request: ${validation.toString()}`;
             res.status(400).send();
@@ -75,53 +72,45 @@ const addSupporter = (req, res) => __awaiter(void 0, void 0, void 0, function* (
         }
         const petitionId = parseInt(req.params.id, 10);
         if (isNaN(petitionId)) {
-            res.statusMessage = "petitionId must be an integer";
-            res.status(400).send();
+            res.status(400).send("Invalid petition ID");
             return;
         }
-        const petition = yield Petition.getOne(petitionId);
-        if (petition == null) {
-            res.statusMessage = "Petition does not exist";
-            res.status(404).send();
+        const supportTierId = req.body.supportTierId;
+        const message = req.body.message;
+        const token = req.header("X-Authorization");
+        logger_1.default.info(`this is user token :${token}`);
+        const userDb = yield (0, user_server_model_1.getUserwithToken)(token);
+        const userId = userDb[0].id;
+        const getPetitionB = yield (0, petition_server_model_1.getPetitionById)(petitionId);
+        if (getPetitionB === undefined) {
+            res.status(404).send("not in db");
             return;
         }
-        if (petition.ownerId === req.authId) {
-            res.statusMessage = "Cannot support your own petition";
-            res.status(403).send();
+        logger_1.default.info(`this is json db :${JSON.stringify(getPetitionB)}`);
+        logger_1.default.info(`this is user db :${userDb[0].id}`);
+        logger_1.default.info(JSON.stringify(req.params));
+        logger_1.default.info(JSON.stringify(req.body));
+        logger_1.default.info(`this is params:${petitionId}, body:${supportTierId}`);
+        logger_1.default.info(`this is params:${typeof petitionId}, body:${typeof supportTierId}`);
+        if (getPetitionB.owner_id === userId) {
+            res.status(403).send("Forbidden own petition");
             return;
         }
-        if (!petition.supportTiers.find(s => s.supportTierId === req.body.supportTierId)) {
-            res.statusMessage = "Support tier does not exist";
-            res.status(404).send();
-            return;
-        }
-        let message = null;
-        if (req.body.hasOwnProperty("message")) {
-            message = req.body.message;
-        }
-        const added = yield Supporters.addSupporter(petitionId, req.authId, req.body.supportTierId, message);
-        if (added) {
-            res.status(201).send();
-            return;
-        }
-        else {
-            // todo what could cause this?
-            res.statusMessage = "Could not add support for petition";
-            res.status(500).send();
+        // const dbGetResult = await getSupportTierById(supportId);
+        // if (!supporterId || isNaN(supporterId)) {
+        //     res.status(404).send("Invalid supporter ID");
+        //     return;
+        // }
+        const dbresult = yield (0, petition_server_model_1.insertSupportDb)(petitionId, userId, supportTierId, message);
+        if (dbresult.affectedRows > 0) {
+            res.status(201).send("Supporter added successfully");
         }
     }
     catch (err) {
-        if (err.errno === 1062) { // 1062 = Duplicate entry MySQL error number
-            res.statusMessage = "Forbidden: Duplicate supporter";
-            res.status(403).send();
-            return;
-        }
-        else {
-            logger_1.default.warn(err);
-            res.statusMessage = "Internal Server Error";
-            res.status(500).send();
-            return;
-        }
+        logger_1.default.error(`Error adding supporter to petition: ${err.message}`);
+        res.statusMessage = "Internal Server Error";
+        res.status(500).send();
+        return;
     }
 });
 exports.addSupporter = addSupporter;

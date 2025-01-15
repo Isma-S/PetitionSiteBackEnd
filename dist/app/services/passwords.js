@@ -14,12 +14,20 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.compare = exports.hash = void 0;
 const bcrypt_1 = __importDefault(require("bcrypt"));
+const logger_1 = __importDefault(require("../../config/logger"));
+const saltRounds = 10;
 const hash = (password) => __awaiter(void 0, void 0, void 0, function* () {
-    return yield bcrypt_1.default.hash(password, 10);
+    // Todo: update this to encrypt the password
+    const hpassword = yield bcrypt_1.default.hash(password, saltRounds);
+    return hpassword;
 });
 exports.hash = hash;
 const compare = (password, comp) => __awaiter(void 0, void 0, void 0, function* () {
-    return yield bcrypt_1.default.compare(password, comp);
+    // Todo: (suggested) update this to compare the encrypted passwords
+    const result = yield bcrypt_1.default.compare(password, comp);
+    logger_1.default.info(`this is original:${result},this is database:${comp},${password}`);
+    logger_1.default.info(`this is sfdsadfsad:${password === comp},this is database:${comp},${password}`);
+    return result;
 });
 exports.compare = compare;
 //# sourceMappingURL=passwords.js.map

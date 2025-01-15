@@ -6,3 +6,4 @@ export default (req: Request, res: Response, next: () => void) => {
     res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE');
     next();
 }
+
