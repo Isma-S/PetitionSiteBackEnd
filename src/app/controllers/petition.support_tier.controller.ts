@@ -1,44 +1,265 @@
 import {Request, Response} from "express";
 import Logger from "../../config/logger";
-import {validate} from "../resources/validate";
-import * as schemas from "../resources/schemas.json";
-import {
-    addSupportTierToDatabase, deleteSupportTierById,
-    getAuthTokenDb,
-    getPetitionById,
-    getSupportTierById, updateSupportTier
-} from "../models/petition.server.model";
-import * as users from "../models/user.server.model";
-import {globalToken} from "./user.controller";
-import {getUserwithToken} from "../models/user.server.model";
-import logger from "../../config/logger";
+import * as schemas from '../resources/schemas.json';
+import { validate } from "../services/validate";
 
-const addSupportTier = async (req: Request, res: Response): Promise<void> => {
+import * as supportTiers from '../models/petition.support_tier.model';
+import {findByToken} from "../models/user.model";
+import * as petitions from '../models/petition.model';
+import * as suppoter from "../models/petition.supporter.model";
+
+
+const addSupportTier =  async (req: Request, res: Response): Promise<void> => {
+    Logger.http('PUT the new supportier to a Petition');
+
+     // validation
+    const validation = await validate(
+        schemas.support_tier_post,
+        req.body);
+
+    if (validation !== true) {
+        res.statusMessage = `Bad Request: ${validation.toString()}`;
+        res.status(400).send();
+        return
+    }
+
+
+     // Check Token
+    if ( req.headers['x-authorization'] === undefined) {
+        res.statusMessage = 'Unauthorized';
+        res.status(401).send();
+        return;
+    }
+
+    const token = req.headers['x-authorization'].toString();
+    const id = parseInt(req.params.id, 10)
+    const tier:supportTiersCreate = req.body;
+
+    if (isNaN(id)) {
+        res.statusMessage = 'Bad Request: ID must be a Integer';
+        res.status(400).send()
+        return;
+    }
+
+
     try{
-        const id = parseInt(req.params.id, 10);
-        if (isNaN(id)) {
-            res.status(400).send("Invalid ID parameter");
+
+         // get owner id by token
+         const [owner] = (await findByToken(token));
+
+         // check if the token was valid or not
+         if (owner === undefined ) {
+             res.statusMessage = 'Unauthorized.';
+             res.status(401).send();
+             return;
+         }
+
+          // get the Petition
+        const [petition] = await petitions.getOne(id);
+
+        // check if Petition exist
+        if (petition === undefined) {
+            res.statusMessage = 'Not Found: ID dose not exist';
+            res.status(404).send()
             return;
         }
-        const validation = await validate(schemas.support_tier_post, req.body);
-        Logger.info(`Thisisownerid:${validation}`)
-        if (validation !== true) {
-            res.statusMessage = `Bad Request:  ${validation.toString()}`;
-            res.status(400).send();
-            return ;
+
+        // Check if teh request is from authorised user
+        if (petition.ownerId !== owner.id) {
+            res.statusMessage = 'Forbidden.';
+            res.status(403).send()
+            return;
         }
-        const data = req.body
-        try {
-            await addSupportTierToDatabase(id, data);
-            res.status(201).send("Support tier added successfully");
-        } catch (error) {
-            Logger.error(`Error adding support tier: ${error.message}`);
-            if (error.message.includes("Cannot add more than three support tiers for a petition.")) {
-                res.status(403).send("Cannot add more than three support tiers for a petition.");
-            } else {
-                res.status(500).send("Internal Server Error");
-            }
+
+        // Check support tier have reach the limit
+        if ((await supportTiers.getByPetition(id)).length < 3) {
+
+            await supportTiers.insert(tier, id);
+            res.status(201).send()
+            return;
+
         }
+        else {
+            res.statusMessage = 'Forbidden: You have reached Max Support tier';
+            res.status(403).send()
+            return;
+         }
+
+
+    } catch (err) {
+        Logger.error(err)
+        if (err.code === 'ER_DUP_ENTRY') { // Duplicate entry MySQL error number
+            res.statusMessage = "Forbidden: Support title not unique within petition ";
+            res.status(403).send();
+            return;
+        } else {
+            res.statusMessage = "Internal Server Error";
+            res.status(500).send();
+            return;
+        }
+    }
+}
+
+const editSupportTier = async (req: Request, res: Response): Promise<void> => {
+    Logger.http('PATCH the supportier with petitionId and tierId');
+
+    // validation
+    const validation = await validate(
+        schemas.support_tier_patch,
+        req.body);
+
+    if (validation !== true) {
+        res.statusMessage = `Bad Request: ${validation.toString()}`;
+        res.status(400).send();
+        return
+    }
+
+     // Check Token
+    if ( req.headers['x-authorization'] === undefined) {
+        res.statusMessage = 'Unauthorized';
+        res.status(401).send();
+        return;
+    }
+
+    const token = req.headers['x-authorization'].toString();
+    const id = parseInt(req.params.id, 10)
+    const idTier = parseInt(req.params.tierId, 10)
+    const newTier:supportTiersCreate = req.body;
+
+    if (isNaN(id) || isNaN(idTier)) {
+        res.statusMessage = 'Bad Request: ID must be a Integer';
+        res.status(400).send()
+        return;
+    }
+
+    try {
+
+        // get owner id by token
+        const [owner] = (await findByToken(token));
+
+        // check if the token was valid or not
+        if (owner === undefined ) {
+            res.statusMessage = 'Unauthorized.';
+            res.status(401).send();
+            return;
+        }
+
+        // get the Petition
+        const [petition] = await petitions.getOne(id);
+
+        // check if Petition exist
+        if (petition === undefined) {
+            res.statusMessage = 'Not Found: ID dose not exist';
+            res.status(404).send()
+            return;
+        }
+
+        // Check if the request is from authorised user
+        if (petition.ownerId !== owner.id) {
+            res.statusMessage = 'Forbidden: ';
+            res.status(403).send()
+            return;
+        }
+
+        //
+        if ((await suppoter.getAllByPetitionId(id)).length !== 0 ) {
+            res.statusMessage = 'Forbidden: Supporter Exist';
+            res.status(403).send();
+            return;
+
+
+        }
+
+        const result = await supportTiers.alter(id, idTier, newTier);
+
+        if (result.affectedRows === 0 ) {
+            res.statusMessage = 'Not Found: Tier not found';
+            res.status(404).send();
+            return;
+        } else {
+
+            res.status(200).send();
+            return;
+        }
+
+
+
+    } catch (err) {
+        Logger.error(err)
+        if (err.code === 'ER_DUP_ENTRY') { // Duplicate entry MySQL error number
+            res.statusMessage = "Forbidden: Support title not unique within petition ";
+            res.status(403).send();
+            return;
+        } else {
+            res.statusMessage = "Internal Server Error";
+            res.status(500).send();
+            return;
+        }
+    }
+}
+
+const deleteSupportTier = async (req: Request, res: Response): Promise<void> => {
+    Logger.http('DELETE a support tier by Petition ID and Tier ID');
+     // Check Token
+     if ( req.headers['x-authorization'] === undefined) {
+        res.statusMessage = 'Unauthorized';
+        res.status(401).send();
+        return;
+    }
+
+    const token = req.headers['x-authorization'].toString();
+    const id = parseInt(req.params.id, 10)
+    const idTier = parseInt(req.params.tierId, 10)
+
+    if (isNaN(id) || isNaN(idTier)) {
+        res.statusMessage = 'Bad Request: ID must be a Integer';
+        res.status(400).send()
+        return;
+    }
+
+    try{
+
+         // get owner id by token
+         const [owner] = (await findByToken(token));
+
+         // check if the token was valid or not
+         if (owner === undefined ) {
+             res.statusMessage = 'Unauthorized.';
+             res.status(401).send();
+             return;
+         }
+
+         // get the Petition
+         const [petition] = await petitions.getOne(id);
+
+         // check if Petition exist
+         if (petition === undefined) {
+             res.statusMessage = 'Not Found: ID dose not exist';
+             res.status(404).send()
+             return;
+         }
+
+         // Check if the request is from authorised user
+         if (petition.ownerId !== owner.id) {
+             res.statusMessage = 'Forbidden: ';
+             res.status(403).send()
+             return;
+         }
+
+
+         const result =  await supportTiers.remove(idTier, id);
+
+         if (result.affectedRows === 0) {
+            res.statusMessage = 'Not Found: Support tier does not exist';
+            res.status(404).send();
+            return;
+         } else {
+            res.status(200).send();
+            return;
+         }
+
+
+
     } catch (err) {
         Logger.error(err);
         res.statusMessage = "Internal Server Error";
@@ -47,90 +268,5 @@ const addSupportTier = async (req: Request, res: Response): Promise<void> => {
     }
 }
 
-const editSupportTier = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const authHeader = req.header('X-Authorization');
-        if (authHeader === undefined) {
-            res.status(401).send("Unauthorized");
-            return ;
-        }
-        Logger.info(`global token ${globalToken}, currentToken:${authHeader}`);
-        Logger.info(`reached here ${globalToken}`);
-        const petitionId = parseInt(req.params.id,10);
-        if (isNaN(petitionId)) {
-            res.status(400).send("Invalid ID parameter");
-            return;
-        }
-        const petition = await getPetitionById(petitionId);
-        Logger.info(`thisiispettiton: ${JSON.stringify(petition)}`)
-        const userDb = petition.owner_id;
-        Logger.info(userDb)
-        const userTokenDb = await getUserwithToken(authHeader);
-        Logger.info(JSON.stringify(userTokenDb))
-        const userTokenDbId = userTokenDb[0].id
-        Logger.info(`this is user current :${typeof userTokenDbId} , this userDb${typeof userDb}`);
-
-        Logger.info(`this is user current :${userTokenDbId} , this userDb${userDb}`);
-        if (userTokenDbId !== userDb) {
-            Logger.info("got here")
-            res.status(404).send("User not authenticated,mismatch");
-            return;
-        }
-        const tierId = parseInt(req.params.tierId,10);
-        const supportTierDb = await getSupportTierById(tierId);
-        Logger.info(`req.params: ${JSON.stringify(supportTierDb)}`);
-        // const petitionDb = await getPetitionById(petitionId);
-
-        const title = req.body.title !== undefined ? req.body.title : supportTierDb.title;
-        const description = req.body.description !== undefined ? req.body.description : supportTierDb.description;
-        const cost = req.body.cost !== undefined ? req.body.cost : supportTierDb.cost;
-        Logger.info(`supportTier:${JSON.stringify(req.body)}`)
-        // Validating the request body
-        const validation = await validate(schemas.support_tier_post, {
-            title,
-            description,
-            cost
-        });
-        if (validation !== true) {
-            res.statusMessage = `Bad Request: ${validation.toString()}`;
-            res.status(400).send();
-            return;
-        }
-        const dbresult = await updateSupportTier(tierId,title,description,cost);
-        if (dbresult[0].affectedRows > 0 ) {
-            res.status(200).send("supporteier updated")
-        } else {
-            res.status(400).send("gone wrong")
-        }
-
-    } catch (err) {
-        Logger.error(`Error editing support tier: ${err.message}`);
-        res.status(500).send("Internal Server Error");
-    }
-};
-
-
-const deleteSupportTier = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const tierId = parseInt(req.params.tierId, 10); // Assuming the tierId is provided as a route parameter
-        if (isNaN(tierId)) {
-            res.status(400).send("Invalid tier ID parameter");
-            return;
-        }
-
-        // Perform the deletion operation by calling the appropriate model function
-        const deleteResult = await deleteSupportTierById(tierId);
-
-        // Check if the deletion was successful
-        if (deleteResult.affectedRows > 0) {
-            res.status(200).send("Support tier deleted successfully");
-        } else {
-            res.status(404).send("Support tier not found or already deleted");
-        }
-    } catch (err) {
-        Logger.error(`Error deleting support tier: ${err.message}`);
-        res.status(500).send("Internal Server Error");
-    }
-};
 
 export {addSupportTier, editSupportTier, deleteSupportTier};

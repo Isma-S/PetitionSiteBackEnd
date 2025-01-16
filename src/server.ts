@@ -10,10 +10,10 @@ async function main() {
     try {
         await connect();
         app.listen(port, () => {
-            Logger.info('Listening on port: ' + port)
+            Logger.info('Listening on port: http://localhost:' + port)
         });
     } catch (err) {
-        Logger.error('Unable to connect to MySQL.',err)
+        Logger.error('Unable to connect to MySQL.')
         process.exit(1);
     }
 }

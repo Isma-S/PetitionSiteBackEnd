@@ -1,43 +1,53 @@
 import {Request, Response} from "express";
 import Logger from "../../config/logger";
-import * as users from "../models/user.image.server.model";
-import {getUserwithId} from "../models/user.image.server.model";
-import {validate} from "../resources/validate";
-import * as schemas from "../resources/schemas.json";
-import logger from "../../config/logger";
-import fs from "mz/fs";
-import path from "path";
-import mime from "mime";
+import * as userImage from './../models/user.image.model';
+import * as users from './../models/user.model';
+// import { generateRandomToken } from "../services/tokenGenerator";
+
+import {fs} from "mz";
+
+const filepath = './storage/images/';
 
 const getImage = async (req: Request, res: Response): Promise<void> => {
+    Logger.http('GET image of the user id:' +parseInt(req.params.id, 10) )
+
+    const id = parseInt(req.params.id, 10);
+
+    // Check invalid id
+    if (isNaN(id)) {
+
+        res.statusMessage = "Bad Request: ID must be a Integer";
+        res.status(400).send();
+        return;
+    }
+
     try{
-        const id = parseInt(req.params.id,10);
-        const dbresult = await users.getUserwithId(id);
-        if (dbresult.length === 0) {
-            res.status(404).send(`User id:${id} doesnt exist`);
-            return;
+
+        const [image] = await userImage.getOne(id);
+
+        if (image === undefined) {
+            res.statusMessage = "Not Found: User not found";
+            res.status(404).send();
+        } else if (image.image_filename === null) {
+            res.statusMessage = 'Not Found: User has no Image'
+            res.status(404).send();
+        } else {
+
+            fs.readFile(filepath + image.image_filename, (err, data) => {
+                if (err) {
+                    Logger.error(err);
+                    res.statusMessage = "Internal Server Errordsf";
+                    res.status(500).send();
+                } else {
+                    res
+                        .status(200)
+                        .contentType('image/'+ image.image_filename.split('.').pop())
+                        .send(data)
+                }
+            })
         }
-        Logger.info(`ssss${dbresult}`)
-        const userdb = dbresult[0];
-        const imageName = userdb.image_filename;
-        Logger.info(`type?${imageName}`)
-        if (imageName === null) {
-            res.status(404).send("no image yet");
-            return;
-        }
-        const imageType = imageName.split('.')[1];
-        // const imageName = `${id}.${imageType}`;
-        const imageDirectory= path.join(__dirname, "../isa50/storage/images");
-        const imagePath = path.join(imageDirectory,imageName);
-        // const temp = req.header("Content-Type");
-        // set the content type to image??
-        // Logger.info(`ssss${typeof image}`)
-        Logger.info(`ssss${imageType}`)
-        // need to be sorted??
-        const contentType = mime.lookup(imageType)
-        Logger.info(`mime ${contentType}`)
-        res.setHeader("Content-Type",contentType);
-        res.sendFile(imagePath)
+
+        return;
 
     } catch (err) {
         Logger.error(err);
@@ -48,40 +58,62 @@ const getImage = async (req: Request, res: Response): Promise<void> => {
 }
 
 const setImage = async (req: Request, res: Response): Promise<void> => {
+    Logger.http('PUT image of the user id:' +parseInt(req.params.id, 10) )
+
+    // Check Token
+    if ( req.headers['x-authorization'] === undefined) {
+        res.statusMessage = 'Unauthorized: Missing token';
+        res.status(401).send();
+        return;
+    }
+
+    const token = req.headers['x-authorization'].toString();
+    const id = parseInt(req.params.id, 10);
+
+    // Check invalid id
+    if (isNaN(id)) {
+
+        res.statusMessage = "Bad Request: ID must be a Integer";
+        res.status(400).send();
+        return;
+    }
+
     try{
-        const validation = await validate(schemas.user_edit, req.body);
-        if (validation !== true) {
-            res.statusMessage = `Bad Request:  ${validation.toString()}`;
+        // Check if there is user with same id and token
+        const [user] = await users.getUser(id, token);
+        if (user === undefined) {
+            res.statusMessage = "Not Found: ID/Token Doesn't Exist ";
+            res.status(404).send();
+            return;
+        }
+
+
+
+        const filetype = req.headers['content-type'].replace('image/','');
+        if ( !['png', 'gif', 'jpeg'].includes(filetype)) {
+            res.statusMessage = 'Bad Request: Invalid Content Type';
             res.status(400).send();
-            return ;
+            return;
         }
-        const id = parseInt(req.params.id,10);
-        const imageHeader = req.header("Content-Type");
-        const imageType = imageHeader.split('/')[1];
-        Logger.info(`This is the headerfor image type:${imageType}??`)
-        const image = req.body;
-        const imageDirectory= path.join(__dirname, "../isa50/storage/images");
-        Logger.info(`Image uploaded to image directory:${imageDirectory}`)
-        const imageName = `user_${id}.${imageType}`;
-        Logger.info(`Image uploaded to image name:${imageName}`)
-        const imagePath = path.join(imageDirectory,imageName);
-        Logger.info(`Image uploaded to:${imagePath}`)
-        await fs.promises.mkdir(imageDirectory, {recursive:true});
-        try {
-            // Logger.info(`Image moved to:${imagePath}`)
-            await fs.promises.writeFile(imagePath, image);
-            Logger.info(`Image moved to:${typeof image}`)
-            const dbresult = await users.insertImage(imageName,id);
-            // Logger.info(`dbresult:${JSON.stringify(dbresult)}`)
-            if (dbresult.affectedRows > 0) {
-                res.status(201).send("image file name set successfully");
-            } else {
-                res.status(403).send(`User id:${id} doesnt exist`);
-            }
-            Logger.info("written file successfully");
-        } catch (err) {
-            Logger.error("Error writing image to folder",err);
+
+        const file = req.body;
+        const filename = `users_${id}.${filetype}`;
+
+        await fs.writeFile(filepath + filename, file);
+
+        let hasImage = false;
+        // remove old image
+        const [oldImage] = await userImage.getOne(id);
+        if (oldImage.image_filename !== null) {
+            await fs.unlink(filepath + oldImage.image_filename);
+            hasImage = true
         }
+
+        await userImage.alter(id, token, filename)
+
+        res.status(hasImage ? 200 : 201).send();
+        return;
+
 
     } catch (err) {
         Logger.error(err);
@@ -92,43 +124,53 @@ const setImage = async (req: Request, res: Response): Promise<void> => {
 }
 
 const deleteImage = async (req: Request, res: Response): Promise<void> => {
-    try{
-        const validation = await validate(schemas.user_edit, req.body);
-        if (validation !== true) {
-            res.statusMessage = `Bad Request:  ${validation.toString()}`;
-            res.status(400).send();
-            return ;
-        }
-        const id = parseInt(req.params.id,10);
-        const authHeader = req.header('X-Authorization').toString();
-        if (isNaN(id)) {
-            res.status(400).send(`Bad Request: Id is not a number`);
-            return;
-        }
-        Logger.info(`Userid:${id}`)
-        const result = await users.getUserwithId(id);
-        if (result.length === 0) {
-            res.status(404).send('User not found');
-        }
-        // not sure if username needs to b modified??
-        const user = result[0];
-        // This is not passing when running as collection??
-        const tokenDb = user.auth_token;
-        if (authHeader === tokenDb) {
-            Logger.info(`authenticated and deleting`);
-            // look into storage and delete physical image??
-            const dbresult = await users.deleteImage(id);
-            if (dbresult.affectedRows > 0) {
-                res.status(200).send("successfully deleted image");
-            } else {
-                res.status(404).send("errorrr")
-            }
-            return;
-        } else {
-            Logger.info(`mismatch authen`);
-            res.status(403).send("Unauthrised User");
-        };
+    // Check Token
+    if ( req.headers['x-authorization'] === undefined) {
+        res.statusMessage = 'Unauthorized: Missing token';
+        res.status(401).send();
+        return;
+    }
 
+    const token = req.headers['x-authorization'].toString();
+    const id = parseInt(req.params.id, 10);
+
+    // Check invalid id
+    if (isNaN(id)) {
+
+        res.statusMessage = "Bad Request: ID must be a Integer";
+        res.status(400).send();
+        return;
+    }
+    try{
+        // get image first
+        const [image] = await userImage.getOne(id);
+
+        if (image === undefined) {
+            res.statusMessage = "Not Found: User not found";
+            res.status(404).send();
+        } else if (image.image_filename === null) {
+            res.statusMessage = 'Not Found: User has no Image'
+            res.status(404).send();
+        } else {
+
+            const result = await userImage.remove(id, token);
+
+            if (result.affectedRows === 0){ // if ID and token do not line for a user then it forbidden
+
+                res.statusMessage = 'Forbidden.'
+                res.status(403).send();
+            }
+            else {
+
+                await fs.unlink(filepath + image.image_filename);
+
+                res.status(200).send()
+            }
+
+
+
+        }
+        return;
     } catch (err) {
         Logger.error(err);
         res.statusMessage = "Internal Server Error";

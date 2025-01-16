@@ -15,7 +15,6 @@
       "email": {
         "type": "string",
         "format": "email",
-        "minLength": 1,
         "maxLength": 256
       },
       "password": {
@@ -72,8 +71,7 @@
         "type": "string",
         "format": "email",
         "minLength": 1,
-        "maxLength": 256,
-        "pattern": "^\\S+@\\S+\\.\\S+$"
+        "maxLength": 256
       },
       "password": {
         "type": "string",
@@ -234,9 +232,6 @@
         "format": "integer",
         "minimum": 0,
         "nullable": false
-      },
-      "id": {
-        "type": "integer"
       }
     },
     "additionalProperties": false

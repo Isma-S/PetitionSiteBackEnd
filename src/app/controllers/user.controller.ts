@@ -1,94 +1,91 @@
 import {Request, Response} from "express";
 import Logger from '../../config/logger';
-import {validate} from "../resources/validate";
-import * as schemas from "../resources/schemas.json";
-import * as users from "../models/user.server.model";
-import logger from "../../config/logger";
-import {hash,compare} from '../services/passwords';
-import {generateToken} from "../services/generateToken";
-import * as trace_events from "trace_events";
-import {isNumberObject} from "node:util/types";
-import {createTokenDb, getUserwithId, logoutwithToken} from "../models/user.server.model";
-let globalToken: string | undefined;
+import * as bcrypt from '../services/passwords';
+import * as schemas from '../resources/schemas.json';
+import { validate } from "../services/validate";
+import * as users from '../models/user.model';
+import { generateRandomToken } from "../services/tokenGenerator";
+
+
 const register = async (req: Request, res: Response): Promise<void> => {
+    Logger.http(`POST create a user with name: ${req.body.firstName} ${req.body.lastName}`);
+
+    // validation
+    const validation = await validate(
+        schemas.user_register,
+        req.body);
+
+    if (validation !== true) {
+        res.statusMessage = `Bad Request: ${validation.toString()}`;
+        res.status(400).send();
+        return
+    }
+
+    // varaiable
+    const email = req.body.email;
+    const firstName = req.body.firstName;
+    const lastName = req.body.lastName;
+    // encrypt the the password
+    const password = await bcrypt.hash(req.body.password);
+
     try{
-        // Your code goes here
-        Logger.http(`POST register a user with firstname: ${req.body.firstName}`);
-        const validation = await validate(schemas.user_register, req.body);
-        if (validation !== true) {
-            res.statusMessage = `Bad Request:  ${validation.toString()}`;
-            res.status(400).send();
-            return ;
-        }
-        const firstName = req.body.firstName;
-        const lastName = req.body.lastName;
-        const email = req.body.email;
-        const password = req.body.password;
-        const hashedPassword = await hash(password);
-        const existingUser = await users.getUser(email);
-        // Check the structure of email
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (emailRegex.test(email) === false) {
-            res.status(400).send('Invalid email input');
-            return;
-        }
-        if (existingUser.length !== 0) {
-            const user = existingUser[0];
-            res.status(403).send(`Email is already used${user.email}`);
-            return;
-        }
-        try {
-            const result = await users.insert(firstName, lastName, email, hashedPassword);
-            const userId = result.insertId;
-            res.status(201).send({userId });
-            return;
-        } catch (err) {
-            res.status(500).send(`Error creating user: ${err}`);
-        }
+
+        const result = await users.insert(email, firstName, lastName, password)
+        res.status(201).send({'userId': result.insertId});
+        return;
+
     } catch (err) {
-        Logger.error(err);
-        res.status(500).send('Internal Server Error');
+        Logger.error(err)
+        if (err.code === 'ER_DUP_ENTRY') { // Duplicate entry MySQL error number
+            res.statusMessage = "Forbidden: Email already exists in the database";
+            res.status(403).send();
+            return;
+        } else {
+            res.statusMessage = "Internal Server Error";
+            res.status(500).send();
+            return;
+        }
     }
 }
 
 const login = async (req: Request, res: Response): Promise<void> => {
+    Logger.http(`POST login user with email: ${req.body.email}`);
+
+    // validation
+    const validation = await validate(
+        schemas.user_login,
+        req.body);
+
+    if (validation !== true) {
+        res.statusMessage = `Bad Request: ${validation.toString()}`;
+        res.status(400).send();
+        return
+    }
+
+    const email = req.body.email;
+    const password = req.body.password;
+
     try{
-        // Your code goes here
-        Logger.info(`Logging in user with email ${req.body.email}`);
-        const email = req.body.email;
-        const password = req.body.password;
-        const validation = await validate(schemas.user_login, req.body);
-        if (validation !== true) {
-            res.statusMessage = `Bad Request: ${validation.toString()}`;
-            res.status(400).send();
-            return ;
+
+        // Get user by email
+        const [requestedUser] = await users.findByEmail(email);
+
+        // check if user is invalid
+        if (requestedUser === undefined || !(await bcrypt.compare(password, requestedUser.password)).valueOf()) {
+            res.statusMessage = "Unauthorized: Incorrect email/password";
+            res.status(401).send();
+            return;
         }
-        try {
-            const result = await users.getUser(email);
-            const user = result[0];
-            const userId = user.id;
-            Logger.info(`this is result${user.password}`);
-            if (result.length === 0) {
-                res.statusMessage = 'Invalid email or password';
-                res.status(401).send();
-                return;
-            }
-            const comparePassword = await compare(password,user.password);
-            if ( comparePassword === true ) {
-                const token = generateToken();
-                Logger.info(`reached here for token ${token}`);
-                globalToken = token;
-                Logger.info(`reached here for token ${globalToken}`);
-                await createTokenDb(token,userId);
-                // res.status(200).send(token);
-                res.status(200).send({userId , token});
-            } else {
-                res.status(401).send('Password no match')
-            }
-        } catch (err) {
-            Logger.error(err);
-            res.status(500);
-        }
+
+        // Token
+        const token = generateRandomToken(64);        // 64 lenght
+        await users.setToken(requestedUser.id, token);
+
+        // retrun
+        res.status(200).send({"userId": requestedUser.id, "token": token});
+        return;
+
+
     } catch (err) {
         Logger.error(err);
         res.statusMessage = "Internal Server Error";
@@ -98,11 +95,34 @@ const login = async (req: Request, res: Response): Promise<void> => {
 }
 
 const logout = async (req: Request, res: Response): Promise<void> => {
+
+    Logger.http(`POST logout user with Token`);
+
+    // Check Token
+    if ( req.headers['x-authorization'] === undefined) {
+        res.statusMessage = 'Unauthorized: Missing token';
+        res.status(401).send();
+        return;
+    }
+
+    const token = req.headers['x-authorization'].toString();
+
     try{
-        Logger.info("Logging user out");
-        const token = req.header('X-Authorization');
-        await logoutwithToken(token);
-        res.status(200).send("Logged out successfuly");
+        // Your code goes here
+        const result = await users.removeToken(token);
+
+        if (result.affectedRows === 0 ) {
+            res.statusMessage = 'Bad request: Account not Logged in';
+            res.status(400).send();
+        } else {
+            res.statusMessage = 'Logout Succesful';
+            res.status(200).send();
+        }
+
+        return;
+
+
+
     } catch (err) {
         Logger.error(err);
         res.statusMessage = "Internal Server Error";
@@ -112,45 +132,54 @@ const logout = async (req: Request, res: Response): Promise<void> => {
 }
 
 const view = async (req: Request, res: Response): Promise<void> => {
+
+    Logger.http(`GET user with ID: ${parseInt(req.params.id, 10)}`);
+
+    // Check Token
+    const hasToken = (req.headers['x-authorization'] !== undefined)
+
+    // Variable
+    const id = parseInt(req.params.id, 10);
+    const token = hasToken ? req.headers['x-authorization'].toString(): undefined;
+
+    // Check invalid id
+    if (isNaN(id)) {
+
+        res.statusMessage = "Bad Request: ID must be a Integer";
+        res.status(400).send();
+        return;
+    }
+
     try{
-        // Your code goes here
-        const id = parseInt(req.params.id,10);
-        // Get the token from the Authorization header
-        Logger.info(`can reach here-1`);
-        const authHeader = req.header('X-Authorization').toString();
-        Logger.info(`can reach here`);
-        Logger.http(`Getting user with user id: ${id}, and token ${authHeader}`);
-        try {
-            const result = await users.getUserwithId(id);
-            if (result.length === 0) {
-                res.status(404).send('User not found');
+
+
+        const [user] = await users.getUser(id, token);
+
+        if ( user === undefined) { // If user is undefiend the request is to get another user information
+
+            // another user
+            const[anotherUser] = await users.getAnotherUser(id);
+            if (anotherUser === undefined) {
+                res.statusMessage = "Unauthorized: Incorrect Id/Token";
+                res.status(401).send();
             }
-            // not sure if username needs to b modified??
-            const user = result[0];
-            // This is not passing when running as collection??
-            const tokenDb = user.auth_token;
-            Logger.info(`this is the auth from database${tokenDb}`);
-            const authUser = {
-                firstName: user.first_name,
-                lastName: user.last_name,
-                email: user.email,
-            };
-            const unAuthUser = {
-                firstName: user.first_name,
-                lastName: user.last_name,
-            };
-            Logger.info(`this is auth token: ${authHeader}, and this db token ${tokenDb}`);
-            if (authHeader === tokenDb) {
-                Logger.info(`for mike`);
-                res.status(200).send(authUser);
-                return;
-            } else {
-                Logger.info(`for kirtys`);
-                res.status(200).send(unAuthUser);
-            };
-        } catch (err) { // doesnt seem to be sending the body?? if else for parseint??
-            res.status(400).send(`ERROR reading user ${id}: ${err}`);
+            else {
+                res.status(200).send({
+                    "firstName": anotherUser.first_name,
+                    "lastName": anotherUser.last_name})
+            }
+
         }
+
+
+        else {
+
+            res.status(200).send({  "email": user.email,
+                                    "firstName": user.first_name,
+                                    "lastName": user.last_name      });
+        }
+
+        return;
     } catch (err) {
         Logger.error(err);
         res.statusMessage = "Internal Server Error";
@@ -160,49 +189,91 @@ const view = async (req: Request, res: Response): Promise<void> => {
 }
 
 const update = async (req: Request, res: Response): Promise<void> => {
+
+    Logger.http(`PATCH update user information with ID: ${parseInt(req.params.id, 10)} and Token`);
+
+     // validation
+    const validation = await validate(
+        schemas.user_edit,
+        req.body);
+
+    if (validation !== true) {
+        res.statusMessage = `Bad Request: ${validation.toString()}`;
+        res.status(400).send();
+        return
+    }
+
+
+     // Check Token
+     if ( req.headers['x-authorization'] === undefined) {
+        res.statusMessage = 'Unauthorized';
+        res.status(401).send();
+        return;
+    }
+
+    const id = parseInt(req.params.id, 10);
+    const userNewData:UserUpdate = req.body;
+    const token = req.headers['x-authorization'].toString();
+
+
+    // Check invalid id
+    if (isNaN(id)) {
+
+        res.statusMessage = "Bad Request: ID must be a Integer";
+        res.status(400).send();
+        return;
+    }
+
+
+
+    // Check password
+    if ((userNewData.password !== undefined && userNewData.currentPassword === undefined)
+    || (userNewData.password === undefined && userNewData.currentPassword !== undefined)) {
+        res.statusMessage = 'Bad Request: Password and Current Password Field ';
+        res.status(400).send();
+        return;
+    }
+
     try{
-        Logger.http(`Patch update user id: ${req.params.id}`);
-        const id = parseInt(req.params.id,10);
-        const email = req.body.email;
-        if (isNaN(id)) {
-            res.status(400).send(`Bad Request: Id is not a number`)
+
+        // Check if there is user with same id and token
+        const [user] = await users.getUser(id, token);
+        if (user === undefined) {
+            res.statusMessage = "Unauthorized: Incorrect Id/Token";
+            res.status(401).send();
+            return;
         }
-        // need to be validated??
-        const validation = await validate(schemas.user_edit,req.body);
-        if (validation !== true) {
-            res.statusMessage = `Bad Request: ${validation.toString()}`;
-            res.status(400).send();
-            return ;
-        }
-        const authHeader = req.header('X-Authorization');
-        if (authHeader === undefined) {
-            res.status(401).send("Unauthorized");
-            return ;
-        }
-        Logger.info(`reached here ${authHeader}`);
-        const userDb = await users.getUserwithId(id);
-        if (userDb.length ===0 ) {
-            res.status(404).send("User not found in database");
-        }
-        const user = userDb[0];
-        Logger.info(`this is user id :${user.id} getting user with token`);
-        if (authHeader !== user.auth_token) {
-            res.status(400).send("User no authenticated,mismatch");
-            return ;
-        }
-        const newPassword = req.body.password;
-        const hashedNewPassword = await hash(newPassword);
-        const comparePassword = await compare(newPassword,user.password);
-        if (comparePassword === true) {
-            res.status(403).send("identical currentPassword and password");
-        } else {
-            const updateResult = await users.updatePassword(user.id,hashedNewPassword);
-            if (updateResult.affectedRows === 0) {
-                res.status(404).send("something went wrong loll??");
-            } else {
-                res.status(200).send(`User ${id} password updated`);
+
+
+         // Password
+         if (userNewData.password !== undefined) {
+
+            const hashPassword = (await users.findByEmail(user.email))[0].password; // Get Current Hash password
+
+            if  ( ! (await bcrypt.compare(userNewData.currentPassword, hashPassword))) { // Check if Current password match
+                res.statusMessage = 'Unauthorized: Invalid current password ';
+                res.status(401).send();
+                return;
             }
+
+            else if (userNewData.password === userNewData.currentPassword) { // Check if Same Password
+                res.statusMessage = 'Forbidden: Same Current password and New password';
+                res.status(403).send();
+                return;
+            }
+
+            else {  // every thing valid
+                userNewData.password = await bcrypt.hash( userNewData.password);
+            }
+
         }
+
+        await users.alter(userNewData, id, token);
+        res.status(200).send();
+
+        return;
+
+
     } catch (err) {
         Logger.error(err);
         res.statusMessage = "Internal Server Error";
@@ -211,4 +282,5 @@ const update = async (req: Request, res: Response): Promise<void> => {
     }
 }
 
-export {register, login, logout, view, update, globalToken}
+
+export {register, login, logout, view, update}

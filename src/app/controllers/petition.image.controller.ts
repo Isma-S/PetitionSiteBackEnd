@@ -1,95 +1,143 @@
 import {Request, Response} from "express";
 import Logger from "../../config/logger";
-import * as users from "../models/user.image.server.model";
-import path from "path";
-import mime from "mime";
-import {getPetitionById, insertPetitionImage} from "../models/petition.server.model";
-import fs from "mz/fs";
-const filepath = "../../../storage/images"
+import * as petitionImage from '../models/petition.image.model'
+import * as users from '../models/user.model';
+import * as petitions from '../models/petition.model';
+
+import { generateRandomToken } from "../services/tokenGenerator";
+
+import {fs} from "mz";
+
+const filepath = './storage/images/';
+
 const getImage = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const id = parseInt(req.params.id, 10);
-        const dbresult = await getPetitionById(id);
-        if (dbresult.length === 0) {
-            res.status(404).send(`Petition with id:${id} doesn't exist`);
-            return;
+    Logger.http('GET image for the Petition');
+
+    const id = parseInt(req.params.id, 10)
+
+    if (isNaN(id)) {
+        res.statusMessage = 'Bad Request: ID must be a Integer';
+        res.status(400).send()
+        return;
+    }
+
+    try{
+        // Your code goes here
+        const [image] = await petitionImage.getOne(id);
+
+        if (image === undefined) {
+            res.statusMessage = "Not Found: Petiton not found";
+            res.status(404).send();
+        } else if (image.image_filename === null) {
+            res.statusMessage = 'Not Found: Petition has no Image'
+            res.status(404).send();
+        } else {
+
+            fs.readFile(filepath + image.image_filename, (err, data) => {
+                if (err) {
+                    Logger.error(err);
+                    res.statusMessage = "Internal Server Errordsf";
+                    res.status(500).send();
+                } else {
+                    res
+                        .status(200)
+                        .contentType('image/'+ image.image_filename.split('.').pop())
+                        .send(data)
+                }
+            })
         }
 
-        const imageName = dbresult.image_filename;
-        if (!imageName) {
-            res.status(404).send("No image found for this petition");
-            return;
-        }
 
-        const imageDirectory = path.join(__dirname, filepath);
-        const imagePath = path.join(imageDirectory, imageName);
-        Logger.info(`petition:${imagePath}`);
-
-        const contentType = mime.lookup(imagePath); // Getting MIME type from file path
-        if (!contentType) {
-            res.status(500).send("Internal Server Error: Unable to determine image content type");
-            return;
-        }
-
-        res.setHeader("Content-Type", contentType);
-        res.sendFile(imagePath);
+        return;
     } catch (err) {
         Logger.error(err);
-        res.status(500).send("Internal Server Error");
+        res.statusMessage = "Internal Server Error";
+        res.status(500).send();
+        return;
     }
-};
-
+}
 
 const setImage = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const image = req.body;
-        // Check if request contains file
-        if (!image) {
-            res.status(400).send("No file uploaded");
+    Logger.http('PUT image of the Petition id:' +parseInt(req.params.id, 10) )
+
+    // Check Token
+    if ( req.headers['x-authorization'] === undefined) {
+        res.statusMessage = 'Unauthorized: Missing token';
+        res.status(401).send();
+        return;
+    }
+
+    const token = req.headers['x-authorization'].toString();
+    const id = parseInt(req.params.id, 10);
+
+    // Check invalid id
+    if (isNaN(id)) {
+
+        res.statusMessage = "Bad Request: ID must be a Integer";
+        res.status(400).send();
+        return;
+    }
+
+    try{
+        // Check if token is valid
+        const [owner] = await users.findByToken(token);
+        if (owner === undefined) {
+            res.statusMessage = "Not Found: Owner does not exist";
+            res.status(404).send();
             return;
         }
-        const id = parseInt(req.params.id,10);
-        const imageHeader = req.header("Content-Type");
-        const imageType = imageHeader.split('/')[1];
-        // Assuming you have a directory to save images
-        const uploadDirectory = path.join(__dirname, filepath);
 
-        // Check if the directory exists, if not, create it
-        if (!fs.existsSync(uploadDirectory)) {
-            fs.mkdirSync(uploadDirectory, { recursive: true });
+        // check if there is pitition with the id provided
+        const [petition] = await petitions.getOne(id);
+        if (petition === undefined) {
+            res.statusMessage = "Not Found: Petition does not exist";
+            res.status(404).send();
+            return;
+        }
+        // Check is owner is the actual owner of the petition
+        if (petition.ownerId !== owner.id) {
+            res.statusMessage = "Unauthorized: this Petition owned by someone else"
+            res.status(401).send();
+            return;
         }
 
-        // Assuming you want to save the file with the original name
-        const imageName = `petition_${id}.${imageType}`;
-        const filePath = path.join(uploadDirectory, imageName);
-        Logger.info("writing image to dir")
-        // Move the uploaded file to the specified directory
-        try {
-            // Logger.info(`Image moved to:${imagePath}`)
-            await fs.writeFile(filePath, image);
-            Logger.info(`Image moved to:${filePath}`)
-            const dbresult = await insertPetitionImage(imageName,id);
-            Logger.info(`Image moved to:${typeof image}`)
-            if (dbresult && dbresult.affectedRows > 0) {
-                if (imageType === "jpeg") {
-                    res.status(201).send("Image file name set successfully");
-                } else if (imageType === "gif") {
-                    res.status(200).send("Image file name set successfully");
-                } else {
-                    res.status(400).send(`Unsupported image type: ${imageType}`);
-                }
-            } else {
-                res.status(403).send(`User id:${id} doesn't exist`);
-            }
-            Logger.info("written file successfully");
-        } catch (err) {
-            Logger.error("Error writing image to folder",err);
+
+        const filetype = req.headers['content-type'].replace('image/','');
+        if ( !['png', 'gif', 'jpeg'].includes(filetype)) {
+            res.statusMessage = 'Bad Request: Invalid Content Type';
+            res.status(400).send();
+            return;
         }
+
+        const file = req.body;
+        const filename = `petition_${id}.${filetype}`;
+
+        await fs.writeFile(filepath + filename, file);
+
+
+
+
+        let hasImage = false;
+        // remove old image
+        const [oldImage] = await petitionImage.getOne(id);
+        if (oldImage.image_filename !== null) {
+            await fs.unlink(filepath + oldImage.image_filename);
+            hasImage = true;
+        }
+
+        await petitionImage.alter(id, owner.id , filename)
+
+        res.status(hasImage ? 200 : 201).send();
+        return;
+
+
     } catch (err) {
         Logger.error(err);
-        res.status(500).send("Internal Server Error");
+        res.statusMessage = "Internal Server Error";
+        res.status(500).send();
+        return;
     }
-};
+}
 
 
 export {getImage, setImage};
